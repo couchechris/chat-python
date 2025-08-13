@@ -1,4 +1,3 @@
-
 import os
 import datetime
 from pymongo import MongoClient
@@ -31,26 +30,33 @@ def connect_to_mongo():
         print(f"Could not connect to MongoDB: {e}")
         raise
 
-def save_message(author: str, message: str):
-    """메시지를 데이터베이스에 저장합니다."""
+def save_message(sender: str, recipient: str, message: str):
+    """두 사용자 간의 메시지를 데이터베이스에 저장합니다."""
     if collection is None:
         print("Database not connected. Cannot save message.")
         return
 
     document = {
-        "author": author,
+        "sender": sender,
+        "recipient": recipient,
         "message": message,
         "timestamp": datetime.datetime.now(datetime.timezone.utc)
     }
     collection.insert_one(document)
 
-def get_recent_messages(limit: int = 50):
-    """가장 최근의 메시지를 지정된 수만큼 가져옵니다."""
+def get_conversation_history(user1: str, user2: str, limit: int = 100):
+    """두 사용자 간의 대화 기록을 가져옵니다."""
     if collection is None:
         print("Database not connected. Cannot retrieve messages.")
         return []
     
-    # timestamp 필드를 기준으로 내림차순 정렬하여 최근 메시지부터 가져옴
-    messages_cursor = collection.find().sort("timestamp", -1).limit(limit)
-    # 리스트로 변환 후, 시간 순서(오래된 순)로 다시 뒤집어서 반환
+    # user1과 user2가 sender 또는 recipient인 모든 메시지를 찾습니다.
+    query = {
+        "$or": [
+            {"sender": user1, "recipient": user2},
+            {"sender": user2, "recipient": user1},
+        ]
+    }
+    
+    messages_cursor = collection.find(query).sort("timestamp", -1).limit(limit)
     return list(messages_cursor)[::-1]
