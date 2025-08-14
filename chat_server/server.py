@@ -2,6 +2,7 @@ import asyncio
 import websockets
 import json
 from . import database
+from bson import ObjectId
 
 # 사용자 이름과 웹소켓 객체를 매핑하여 저장하는 딕셔너리
 connected_users = {}
@@ -14,12 +15,10 @@ async def broadcast_user_list():
     user_list = list(connected_users.keys())
     message = json.dumps({"type": "user_list", "users": user_list})
     
-    # asyncio.gather를 사용하여 모든 전송 작업을 동시에 실행
     await asyncio.gather(*[user.send(message) for user in connected_users.values()])
 
 async def handler(websocket):
-    """클라이언트 연결을 처리하고 1:1 메시지를 중계합니다."""
-    # 디버깅을 통해 알아낸 올바른 방법: websocket.request.path
+    """클라이언트 연결을 처리하고 1:1 메시지 및 읽음 확인을 중계합니다."""
     username = websocket.request.path.strip('/')
     
     if not username or username in connected_users:
@@ -27,58 +26,79 @@ async def handler(websocket):
         await websocket.close(code=1008, reason="Invalid or duplicate username")
         return
 
-    # 새로운 사용자 등록
     connected_users[username] = websocket
     print(f"User '{username}' connected.")
     await broadcast_user_list()
 
     try:
-        # 클라이언트로부터 메시지를 계속 수신
         async for message in websocket:
             try:
                 data = json.loads(message)
-                recipient = data.get("recipient")
-                msg_text = data.get("message")
+                msg_type = data.get("type")
 
-                if not recipient or not msg_text:
-                    continue
+                if msg_type == "chat_message":
+                    recipient = data.get("recipient")
+                    msg_text = data.get("message")
 
-                # 메시지 저장
-                database.save_message(sender=username, recipient=recipient, message=msg_text)
+                    if not recipient or not msg_text:
+                        continue
 
-                # 수신자에게 메시지 전송
-                recipient_socket = connected_users.get(recipient)
-                if recipient_socket:
-                    response = {
-                        "type": "chat_message",
-                        "sender": username,
-                        "message": msg_text
-                    }
-                    await recipient_socket.send(json.dumps(response))
-                else:
-                    print(f"Message from '{username}' to offline user '{recipient}' saved.")
+                    # 메시지를 저장하고 고유 ID를 받음
+                    message_id = database.save_message(sender=username, recipient=recipient, message=msg_text)
+
+                    if message_id:
+                        # [FIX] 발신자에게 메시지 ID를 알려주어 추적할 수 있게 함
+                        ack_response = {
+                            "type": "message_sent_ack",
+                            "message_id": str(message_id),
+                            "recipient": recipient
+                        }
+                        await websocket.send(json.dumps(ack_response))
+
+                        # 수신자에게 메시지 ID와 함께 메시지 전송
+                        recipient_socket = connected_users.get(recipient)
+                        if recipient_socket:
+                            response = {
+                                "type": "chat_message",
+                                "message_id": str(message_id), # ObjectId를 문자열로 변환
+                                "sender": username,
+                                "message": msg_text
+                            }
+                            await recipient_socket.send(json.dumps(response))
+                        else:
+                            print(f"Message from '{username}' to offline user '{recipient}' saved.")
+                
+                elif msg_type == "read_receipt":
+                    message_id = data.get("message_id")
+                    sender = data.get("sender") # 이 메시지를 보낸 원래 발신자
+                    
+                    # 원래 발신자에게 읽음 알림 전송
+                    sender_socket = connected_users.get(sender)
+                    if sender_socket:
+                        response = {
+                            "type": "message_read",
+                            "message_id": message_id
+                        }
+                        await sender_socket.send(json.dumps(response))
 
             except json.JSONDecodeError:
                 print(f"Received invalid JSON from {username}")
 
     except websockets.exceptions.ConnectionClosed:
-        pass  # 정상 종료는 조용히 처리
+        pass
     finally:
-        # 사용자 연결 종료 시 등록 해제 및 목록 브로드캐스트
         if username in connected_users:
             del connected_users[username]
             print(f"User '{username}' disconnected.")
             await broadcast_user_list()
 
 async def main():
-    """
-    웹소켓 서버를 시작하고 DB에 연결합니다.
-    """
+    """웹소켓 서버를 시작하고 DB에 연결합니다."""
     database.connect_to_mongo()
     
     async with websockets.serve(handler, "localhost", 8765):
-        print("WebSocket server for 1:1 chat started at ws://localhost:8765")
-        await asyncio.Future()  # 서버를 계속 실행
+        print("WebSocket server with read receipts started at ws://localhost:8765")
+        await asyncio.Future()
 
 if __name__ == "__main__":
     try:

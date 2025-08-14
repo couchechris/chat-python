@@ -2,24 +2,55 @@ import asyncio
 import websockets
 import json
 
+# 내가 보낸 메시지 ID를 저장하여 읽음 확인을 추적
+sent_messages = {}
+
 async def receive_messages(websocket):
     """
-    서버로부터 메시지를 수신하고 JSON을 파싱하여 출력합니다.
+    서버로부터 메시지를 수신하고, 타입에 따라 처리합니다.
     """
     try:
         async for message in websocket:
             try:
                 data = json.loads(message)
-                if data.get("type") == "user_list":
-                    print(f"[Online Users: {', '.join(data['users'])}]")
-                elif data.get("type") == "chat_message":
-                    print(f"< From {data['sender']}: {data['message']}")
-                else:
-                    print(f"< {message}")
+                msg_type = data.get("type")
+
+                if msg_type == "user_list":
+                    print(f"\n[Online Users: {', '.join(data['users'])}]")
+                
+                elif msg_type == "chat_message":
+                    sender = data['sender']
+                    msg_text = data['message']
+                    msg_id = data['message_id']
+                    print(f"\n< From {sender}: {msg_text}")
+                    
+                    # 메시지를 받았으므로 '읽음 확인' 알림을 서버에 보냄
+                    receipt = {
+                        "type": "read_receipt",
+                        "message_id": msg_id,
+                        "sender": sender # 원래 메시지를 보낸 사람
+                    }
+                    await websocket.send(json.dumps(receipt))
+
+                elif msg_type == "message_sent_ack":
+                    # 내가 보낸 메시지에 대한 서버의 확인 응답
+                    # 이 메시지의 ID를 sent_messages에 저장하여 추적 시작
+                    sent_messages[data['message_id']] = {"recipient": data['recipient']}
+
+                elif msg_type == "message_read":
+                    msg_id = data['message_id']
+                    original_message = sent_messages.get(msg_id)
+                    if original_message:
+                        print(f"\n(Message to {original_message['recipient']} was read)")
+
             except json.JSONDecodeError:
                 print(f"< {message}")
+            finally:
+                # 다음 입력을 위해 프롬프트 다시 표시
+                print("> ", end="", flush=True)
+
     except websockets.exceptions.ConnectionClosed:
-        print("Connection to server closed.")
+        print("\nConnection to server closed.")
 
 async def send_messages(websocket):
     """
@@ -46,11 +77,16 @@ async def send_messages(websocket):
                 print("Recipient and message cannot be empty.")
                 continue
 
+            # 메시지 ID는 서버에서 생성되므로, 클라이언트는 보낼 내용만 구성
             payload = {
+                "type": "chat_message",
                 "recipient": recipient,
                 "message": message
             }
             await websocket.send(json.dumps(payload))
+            # 클라이언트에서 ID를 미리 만들어서 sent_messages에 저장할 수도 있지만,
+            # 서버의 DB ID와 동기화하기 위해 지금은 서버 응답을 기다리는 편이 간단함.
+            # (더 복잡한 구현에서는 UUID를 클라이언트에서 생성)
 
         except (KeyboardInterrupt, asyncio.CancelledError):
             break

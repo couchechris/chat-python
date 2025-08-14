@@ -31,10 +31,10 @@ def connect_to_mongo():
         raise
 
 def save_message(sender: str, recipient: str, message: str):
-    """두 사용자 간의 메시지를 데이터베이스에 저장합니다."""
+    """두 사용자 간의 메시지를 데이터베이스에 저장하고 ID를 반환합니다."""
     if collection is None:
         print("Database not connected. Cannot save message.")
-        return
+        return None
 
     document = {
         "sender": sender,
@@ -42,7 +42,8 @@ def save_message(sender: str, recipient: str, message: str):
         "message": message,
         "timestamp": datetime.datetime.now(datetime.timezone.utc)
     }
-    collection.insert_one(document)
+    result = collection.insert_one(document)
+    return result.inserted_id
 
 def get_conversation_history(user1: str, user2: str, limit: int = 100):
     """두 사용자 간의 대화 기록을 가져옵니다."""
